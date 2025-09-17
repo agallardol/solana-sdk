@@ -103,6 +103,8 @@ pub struct PodSlotHashes {
 #[cfg(feature = "bytemuck")]
 impl PodSlotHashes {
     pub fn fetch() -> Result<Self, solana_program_error::ProgramError> {
+        use solana_program_error::ProgramError;
+
         let sysvar_len = SYSVAR_LEN;
 
         // 1) Over-allocate so we can choose an 8-aligned start inside this Vec<u8>.
