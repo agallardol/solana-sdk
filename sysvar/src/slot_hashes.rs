@@ -104,18 +104,20 @@ pub struct PodSlotHashes {
 impl PodSlotHashes {
     /// Fetch all of the raw sysvar data using the `sol_get_sysvar` syscall.
     pub fn fetch() -> Result<Self, solana_program_error::ProgramError> {
-        // Allocate an uninitialized buffer for the raw sysvar data.
-
         let sysvar_len = SYSVAR_LEN;
-        // The original code was not aligning the buffer to 8 consistently
-        // let mut data = vec![0; sysvar_len];
 
-        // This patch ensures the buffer is aligned to 8.
-        let words = (SYSVAR_LEN + 7) / 8;
-        let mut aligned_words: Vec<u64> = vec![0; words];
+        // 1) Over-allocate so we can choose an 8-aligned start inside this Vec<u8>.
+        let mut data = vec![0u8; sysvar_len + 7];
 
-        let buf_all = bytemuck::cast_slice_mut::<u64, u8>(&mut aligned_words);
-        let data = &mut buf_all[..SYSVAR_LEN];
+        // 2) Compute an 8-aligned start within `data`.
+        let base = data.as_ptr() as usize;
+        let aligned = (base + 7) & !7usize;
+        let aligned_off = aligned - base;
+
+        // 3) Create the aligned subslice that the syscall will write into.
+        let aligned_buf = unsafe {
+            core::slice::from_raw_parts_mut(data.as_mut_ptr().add(aligned_off), sysvar_len)
+        };
 
         // Ensure the created buffer is aligned to 8.
         if data.as_ptr().align_offset(8) != 0 {
@@ -124,12 +126,7 @@ impl PodSlotHashes {
 
         // Populate the buffer by fetching all sysvar data using the
         // `sol_get_sysvar` syscall.
-        crate::get_sysvar(
-            &mut data,
-            &SlotHashes::id(),
-            /* offset */ 0,
-            /* length */ sysvar_len as u64,
-        )?;
+        crate::get_sysvar(aligned_buf, &SlotHashes::id(), 0, sysvar_len as u64)?;
 
         // Get the number of slot hashes present in the data by reading the
         // `u64` length at the beginning of the data, then use that count to
