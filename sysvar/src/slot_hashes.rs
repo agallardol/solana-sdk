@@ -102,7 +102,6 @@ pub struct PodSlotHashes {
 
 #[cfg(feature = "bytemuck")]
 impl PodSlotHashes {
-    /// Fetch all of the raw sysvar data using the `sol_get_sysvar` syscall.
     pub fn fetch() -> Result<Self, solana_program_error::ProgramError> {
         let sysvar_len = SYSVAR_LEN;
 
@@ -114,34 +113,42 @@ impl PodSlotHashes {
         let aligned = (base + 7) & !7usize;
         let aligned_off = aligned - base;
 
-        // 3) Create the aligned subslice that the syscall will write into.
-        let aligned_buf = unsafe {
-            core::slice::from_raw_parts_mut(data.as_mut_ptr().add(aligned_off), sysvar_len)
-        };
+        // 3) Create the aligned subslice that the syscall will write into (safe slicing).
+        let start = aligned_off;
+        let end = start
+            .checked_add(sysvar_len)
+            .ok_or(ProgramError::InvalidAccountData)?;
+        let aligned_buf: &mut [u8] = &mut data[start..end];
 
-        // Ensure the created buffer is aligned to 8.
-        if data.as_ptr().align_offset(8) != 0 {
-            return Err(solana_program_error::ProgramError::InvalidAccountData);
-        }
-
-        // Populate the buffer by fetching all sysvar data using the
-        // `sol_get_sysvar` syscall.
+        // 4) Populate the aligned subslice via the syscall.
         crate::get_sysvar(aligned_buf, &SlotHashes::id(), 0, sysvar_len as u64)?;
 
-        // Get the number of slot hashes present in the data by reading the
-        // `u64` length at the beginning of the data, then use that count to
-        // calculate the length of the slot hashes data.
-        //
-        // The rest of the buffer is uninitialized and should not be accessed.
-        let length = data
-            .get(..U64_SIZE)
-            .and_then(|bytes| bytes.try_into().ok())
-            .map(u64::from_le_bytes)
-            .and_then(|length| length.checked_mul(std::mem::size_of::<PodSlotHash>() as u64))
-            .ok_or(solana_program_error::ProgramError::InvalidAccountData)?;
+        // (Optional) debug check: the subslice start is 8-aligned by construction.
+        debug_assert_eq!(((aligned_buf.as_ptr() as usize) & 7), 0);
 
-        let slot_hashes_start = U64_SIZE;
-        let slot_hashes_end = slot_hashes_start.saturating_add(length as usize);
+        // 5) Parse the length from the **aligned view** (not from data[..U64_SIZE]).
+        let count_bytes = aligned_buf
+            .get(..U64_SIZE)
+            .ok_or(ProgramError::InvalidAccountData)?;
+        let count = u64::from_le_bytes(count_bytes.try_into().unwrap());
+
+        // Total bytes of the entries region
+        let bytes_of_hashes = count
+            .checked_mul(core::mem::size_of::<PodSlotHash>() as u64)
+            .ok_or(ProgramError::InvalidAccountData)? as usize;
+
+        // 6) Compute offsets inside `data` (include the alignment offset).
+        let slot_hashes_start = start
+            .checked_add(U64_SIZE)
+            .ok_or(ProgramError::InvalidAccountData)?;
+        let slot_hashes_end = slot_hashes_start
+            .checked_add(bytes_of_hashes)
+            .ok_or(ProgramError::InvalidAccountData)?;
+
+        // 7) Bounds check: the hashes region must fit in the aligned slice.
+        if slot_hashes_end > end {
+            return Err(ProgramError::InvalidAccountData);
+        }
 
         Ok(Self {
             data,
