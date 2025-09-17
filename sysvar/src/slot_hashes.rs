@@ -102,9 +102,7 @@ pub struct PodSlotHashes {
 
 #[cfg(feature = "bytemuck")]
 impl PodSlotHashes {
-    pub fn fetch() -> Result<Self, solana_program_error::ProgramError> {
-        use solana_program_error::ProgramError;
-
+    pub fn fetch() -> Result<Self, ProgramError> {
         let sysvar_len = SYSVAR_LEN;
 
         // 1) Over-allocate so we can choose an 8-aligned start inside this Vec<u8>.
@@ -115,42 +113,25 @@ impl PodSlotHashes {
         let aligned = (base + 7) & !7usize;
         let aligned_off = aligned - base;
 
-        // 3) Create the aligned subslice that the syscall will write into (safe slicing).
-        let start = aligned_off;
-        let end = start
-            .checked_add(sysvar_len)
-            .ok_or(ProgramError::InvalidAccountData)?;
-        let aligned_buf: &mut [u8] = &mut data[start..end];
+        // 3) Create the aligned subslice that the syscall will write into.
+        let aligned_buf = unsafe {
+            core::slice::from_raw_parts_mut(data.as_mut_ptr().add(aligned_off), sysvar_len)
+        };
 
-        // 4) Populate the aligned subslice via the syscall.
+        // 4) Fill the aligned subslice via the syscall.
         crate::get_sysvar(aligned_buf, &SlotHashes::id(), 0, sysvar_len as u64)?;
 
-        // (Optional) debug check: the subslice start is 8-aligned by construction.
-        debug_assert_eq!(((aligned_buf.as_ptr() as usize) & 7), 0);
-
-        // 5) Parse the length from the **aligned view** (not from data[..U64_SIZE]).
-        let count_bytes = aligned_buf
+        // 5) Parse header/length from the aligned view.
+        let length = aligned_buf
             .get(..U64_SIZE)
-            .ok_or(ProgramError::InvalidAccountData)?;
-        let count = u64::from_le_bytes(count_bytes.try_into().unwrap());
-
-        // Total bytes of the entries region
-        let bytes_of_hashes = count
-            .checked_mul(core::mem::size_of::<PodSlotHash>() as u64)
-            .ok_or(ProgramError::InvalidAccountData)? as usize;
-
-        // 6) Compute offsets inside `data` (include the alignment offset).
-        let slot_hashes_start = start
-            .checked_add(U64_SIZE)
-            .ok_or(ProgramError::InvalidAccountData)?;
-        let slot_hashes_end = slot_hashes_start
-            .checked_add(bytes_of_hashes)
+            .and_then(|b| b.try_into().ok())
+            .map(u64::from_le_bytes)
+            .and_then(|n| n.checked_mul(core::mem::size_of::<PodSlotHash>() as u64))
             .ok_or(ProgramError::InvalidAccountData)?;
 
-        // 7) Bounds check: the hashes region must fit in the aligned slice.
-        if slot_hashes_end > end {
-            return Err(ProgramError::InvalidAccountData);
-        }
+        // 6) Store byte offsets relative to the Vec<u8> base.
+        let slot_hashes_start = aligned_off + U64_SIZE;
+        let slot_hashes_end = slot_hashes_start + (length as usize);
 
         Ok(Self {
             data,
