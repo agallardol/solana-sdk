@@ -105,8 +105,17 @@ impl PodSlotHashes {
     /// Fetch all of the raw sysvar data using the `sol_get_sysvar` syscall.
     pub fn fetch() -> Result<Self, solana_program_error::ProgramError> {
         // Allocate an uninitialized buffer for the raw sysvar data.
+
         let sysvar_len = SYSVAR_LEN;
-        let mut data = vec![0; sysvar_len];
+        // The original code was not aligning the buffer to 8 consistently
+        // let mut data = vec![0; sysvar_len];
+
+        // This patch ensures the buffer is aligned to 8.
+        let words = (SYSVAR_LEN + 7) / 8;
+        let mut aligned_words: Vec<u64> = vec![0; words];
+
+        let buf_all = bytemuck::cast_slice_mut::<u64, u8>(&mut aligned_words);
+        let data = &mut buf_all[..SYSVAR_LEN];
 
         // Ensure the created buffer is aligned to 8.
         if data.as_ptr().align_offset(8) != 0 {
