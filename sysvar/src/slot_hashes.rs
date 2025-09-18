@@ -106,34 +106,33 @@ pub struct PodSlotHashes {
 impl PodSlotHashes {
     pub fn fetch() -> Result<Self, ProgramError> {
         let sysvar_len = SYSVAR_LEN;
-
-        // 1) Over-allocate so we can choose an 8-aligned start inside this Vec<u8>.
         let mut data = vec![0u8; sysvar_len + 7];
 
-        // 2) Compute an 8-aligned start within `data`.
-        let base = data.as_ptr() as usize;
+        // Compute 8-aligned start within `data`
+        let base = data.as_mut_ptr() as usize;
         let aligned = (base + 7) & !7usize;
-        let aligned_off = aligned - base;
+        let offset = aligned - base;
 
-        // 3) Create the aligned subslice that the syscall will write into.
-        let aligned_buf = unsafe {
-            core::slice::from_raw_parts_mut(data.as_mut_ptr().add(aligned_off), sysvar_len)
-        };
+        // SAFETY: offset ≤ 7, sysvar_len ≤ data.len() - offset
+        let aligned_buf =
+            unsafe { core::slice::from_raw_parts_mut(data.as_mut_ptr().add(offset), sysvar_len) };
 
-        // 4) Fill the aligned subslice via the syscall.
+        // Ensure the created buffer is aligned to 8.
+        if aligned_buf.as_ptr().align_offset(8) != 0 {
+            return Err(solana_program_error::ProgramError::InvalidAccountData);
+        }
+
         crate::get_sysvar(aligned_buf, &SlotHashes::id(), 0, sysvar_len as u64)?;
 
-        // 5) Parse header/length from the aligned view.
         let length = aligned_buf
             .get(..U64_SIZE)
             .and_then(|b| b.try_into().ok())
             .map(u64::from_le_bytes)
-            .and_then(|n| n.checked_mul(core::mem::size_of::<PodSlotHash>() as u64))
+            .and_then(|len| len.checked_mul(core::mem::size_of::<PodSlotHash>() as u64))
             .ok_or(ProgramError::InvalidAccountData)?;
 
-        // 6) Store byte offsets relative to the Vec<u8> base.
-        let slot_hashes_start = aligned_off + U64_SIZE;
-        let slot_hashes_end = slot_hashes_start + (length as usize);
+        let slot_hashes_start = offset + U64_SIZE;
+        let slot_hashes_end = slot_hashes_start.saturating_add(length as usize);
 
         Ok(Self {
             data,
