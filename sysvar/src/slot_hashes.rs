@@ -103,38 +103,34 @@ pub struct PodSlotHashes {
 #[cfg(feature = "bytemuck")]
 impl PodSlotHashes {
     /// Fetch all of the raw sysvar data using the `sol_get_sysvar` syscall.
-    pub fn fetch() -> Result<Self, solana_program_error::ProgramError> {
-        // Allocate an uninitialized buffer for the raw sysvar data.
+    pub fn fetch() -> Result<Self, ProgramError> {
         let sysvar_len = SYSVAR_LEN;
-        let mut data = vec![0; sysvar_len];
+        let mut data = vec![0u8; sysvar_len + 7];
+
+        // Compute 8-aligned start within `data`
+        let base = data.as_mut_ptr() as usize;
+        let aligned = (base + 7) & !7usize;
+        let offset = aligned - base;
+
+        // SAFETY: offset ≤ 7, sysvar_len ≤ data.len() - offset
+        let aligned_buf =
+            unsafe { core::slice::from_raw_parts_mut(data.as_mut_ptr().add(offset), sysvar_len) };
 
         // Ensure the created buffer is aligned to 8.
-        if data.as_ptr().align_offset(8) != 0 {
+        if aligned_buf.as_ptr().align_offset(8) != 0 {
             return Err(solana_program_error::ProgramError::InvalidAccountData);
         }
 
-        // Populate the buffer by fetching all sysvar data using the
-        // `sol_get_sysvar` syscall.
-        crate::get_sysvar(
-            &mut data,
-            &SlotHashes::id(),
-            /* offset */ 0,
-            /* length */ sysvar_len as u64,
-        )?;
+        crate::get_sysvar(aligned_buf, &SlotHashes::id(), 0, sysvar_len as u64)?;
 
-        // Get the number of slot hashes present in the data by reading the
-        // `u64` length at the beginning of the data, then use that count to
-        // calculate the length of the slot hashes data.
-        //
-        // The rest of the buffer is uninitialized and should not be accessed.
-        let length = data
+        let length = aligned_buf
             .get(..U64_SIZE)
-            .and_then(|bytes| bytes.try_into().ok())
+            .and_then(|b| b.try_into().ok())
             .map(u64::from_le_bytes)
-            .and_then(|length| length.checked_mul(std::mem::size_of::<PodSlotHash>() as u64))
-            .ok_or(solana_program_error::ProgramError::InvalidAccountData)?;
+            .and_then(|len| len.checked_mul(core::mem::size_of::<PodSlotHash>() as u64))
+            .ok_or(ProgramError::InvalidAccountData)?;
 
-        let slot_hashes_start = U64_SIZE;
+        let slot_hashes_start = offset + U64_SIZE;
         let slot_hashes_end = slot_hashes_start.saturating_add(length as usize);
 
         Ok(Self {
