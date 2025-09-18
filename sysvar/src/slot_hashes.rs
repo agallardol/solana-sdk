@@ -48,6 +48,8 @@
 
 #[cfg(feature = "bytemuck")]
 use bytemuck_derive::{Pod, Zeroable};
+#[cfg(feature = "bytemuck")]
+use solana_program_error::ProgramError;
 #[cfg(feature = "bincode")]
 use {crate::Sysvar, solana_account_info::AccountInfo};
 use {solana_clock::Slot, solana_hash::Hash};
