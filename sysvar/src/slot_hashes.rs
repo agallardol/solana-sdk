@@ -103,7 +103,7 @@ pub struct PodSlotHashes {
 #[cfg(feature = "bytemuck")]
 impl PodSlotHashes {
     /// Fetch all of the raw sysvar data using the `sol_get_sysvar` syscall.
-    pub fn fetch() -> Result<Self, ProgramError> {
+    pub fn fetch() -> Result<Self, solana_program_error::ProgramError> {
         let sysvar_len = SYSVAR_LEN;
         let mut data = vec![0u8; sysvar_len + 7];
 
@@ -128,7 +128,7 @@ impl PodSlotHashes {
             .and_then(|b| b.try_into().ok())
             .map(u64::from_le_bytes)
             .and_then(|len| len.checked_mul(core::mem::size_of::<PodSlotHash>() as u64))
-            .ok_or(ProgramError::InvalidAccountData)?;
+            .ok_or(solana_program_error::ProgramError::InvalidAccountData)?;
 
         let slot_hashes_start = offset + U64_SIZE;
         let slot_hashes_end = slot_hashes_start.saturating_add(length as usize);
